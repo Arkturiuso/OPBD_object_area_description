@@ -3,3 +3,5 @@
 
 ### Командная работа за 2 семестр находится по ссылке:
 https://github.com/Arkturiuso/MLTeamProject/tree/develop
+
+### Работы за 3 семестр находятся в ветке 3Семестр
