@@ -12,7 +12,7 @@ rs = Recommender()
 class RatingIn(BaseModel):
     user_id: int
     movie_id: int
-    rating: float = Field(..., ge=0.5, le=5)
+    rating: float = Field(..., ge=0.5, le=5, multiple_of=0.5)
 
 class UserIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
@@ -50,7 +50,9 @@ def recommend_user_cf(user_id: int, n: int = Query(10, ge=1, le=50), k: int = Qu
 def similar_content(movie_id: int, n: int = Query(10, ge=1, le=50)): return _call(rs.similar_content, movie_id, n)
 
 @app.get("/users/{user_id}/recommendations")
-def personal(user_id: int, n: int = Query(10, ge=1, le=50), method: Literal["content", "hybrid"] = Query("content"), alpha: float = Query(0.7)):
+def personal(user_id: int, n: int = Query(10, ge=1, le=50),
+             method: Literal["content", "hybrid"] = Query("content"),
+             alpha: float = Query(0.7, ge=0.0, le=1.0)):
     return _call(rs.recommend_personal, user_id, n, method, alpha)
 
 @app.get("/users")

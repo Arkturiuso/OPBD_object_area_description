@@ -8,16 +8,13 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
 from sqlalchemy import create_engine
-from sqlalchemy.engine import URL
 
-MYSQL_USER = "root"
-MYSQL_PASS = "1234"
-MYSQL_HOST = "127.0.0.1"
-MYSQL_PORT = 3306
-DB_NAME = "films_db"
+from db_config import DB_NAME, connect_kwargs, engine_url
+from localization import GENRE_RU, genre_ru
 
 MIN_ITEM_RATINGS = 10
-OUT_COLS = ["movie_id", "title", "year", "genres", "poster_url", "avg_rating", "count_rating", "w_score"]
+OUT_COLS = ["movie_id", "title", "title_ru", "year", "genres", "poster_url",
+            "avg_rating", "count_rating", "w_score"]
 
 class NotEnoughData(ValueError):
     pass
@@ -31,18 +28,31 @@ class Recommender:
     def __init__(self, db_path: str = None):
         self._lock = threading.RLock()
         self._dirty = True
-        
-        url = URL.create("mysql+pymysql", username=MYSQL_USER, password=MYSQL_PASS, host=MYSQL_HOST, port=MYSQL_PORT, database=DB_NAME, query={"charset": "utf8mb4"})
-        self.engine = create_engine(url)
-        
+
+        self.engine = create_engine(engine_url())
         with self.engine.connect() as con:
             self.movies = pd.read_sql("SELECT * FROM movies", con)
+
+        # Старая БД может быть без переводов - приложение всё равно должно работать.
+        if "title_ru" not in self.movies:
+            self.movies["title_ru"] = self.movies["title"]
+        else:
+            self.movies["title_ru"] = self.movies["title_ru"].fillna("").astype(str)
+            empty = self.movies["title_ru"].str.strip() == ""
+            self.movies.loc[empty, "title_ru"] = self.movies.loc[empty, "title"]
+        if "overview" not in self.movies:
+            self.movies["overview"] = ""
+        if "overview_ru" not in self.movies:
+            self.movies["overview_ru"] = ""
+
         self._build_content()
 
     def _conn(self):
         return pymysql.connect(
-            host=MYSQL_HOST, user=MYSQL_USER, password=MYSQL_PASS, 
-            database=DB_NAME, port=MYSQL_PORT, cursorclass=pymysql.cursors.DictCursor
+            **connect_kwargs(),
+            database=DB_NAME,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
         )
 
     def _ensure(self):
@@ -54,11 +64,25 @@ class Recommender:
             self._dirty = False
 
     def _build_content(self):
-        genres = self.movies.genres.str.replace("-", "", regex=False).str.replace("|", " ", regex=False).str.lower()
-        decade = self.movies.year.apply(lambda y: f"decade{int(y) // 10 * 10}" if pd.notna(y) else "")
-        overview = self.movies["overview"].fillna("") if "overview" in self.movies else ""
+        genres = (self.movies.genres.fillna("")
+                  .str.replace("-", "", regex=False)
+                  .str.replace("|", " ", regex=False)
+                  .str.lower())
+        decade = self.movies.year.apply(
+            lambda y: f"decade{int(y) // 10 * 10}" if pd.notna(y) else ""
+        )
+        overview = self.movies["overview"].fillna("")
+        # Описание весит 1x, жанры 3x, десятилетие 1x - так жанр не теряется
+        # среди длинного текста описания.
         txt = overview + " " + (genres + " ") * 3 + decade
-        vec = TfidfVectorizer(token_pattern=r"[A-Za-z0-9]{2,}", lowercase=True, stop_words="english", ngram_range=(1, 2), min_df=2, sublinear_tf=True)
+        vec = TfidfVectorizer(
+            token_pattern=r"(?u)\b\w\w+\b",  # латиница и кириллица
+            lowercase=True,
+            stop_words="english",
+            ngram_range=(1, 2),
+            min_df=2,
+            sublinear_tf=True,
+        )
         self.X_content = vec.fit_transform(txt)
         self.knn_content = NearestNeighbors(metric="cosine", algorithm="brute").fit(self.X_content)
         self.mpos = {int(m): i for i, m in enumerate(self.movies.movie_id)}
@@ -92,34 +116,59 @@ class Recommender:
     def _out(self, ids, extra=None):
         d = self.catalog.loc[list(ids), OUT_COLS].copy()
         if extra:
-            for k, vals in extra.items(): d[k] = list(vals)
-        d["year"] = d["year"].astype(object).where(d["year"].notna(), None)
+            for k, vals in extra.items():
+                d[k] = list(vals)
+
+        d["title_ru"] = d["title_ru"].fillna("").astype(str)
+        empty = d["title_ru"].str.strip() == ""
+        d.loc[empty, "title_ru"] = d.loc[empty, "title"]
+        d["genres_ru"] = d["genres"].fillna("").apply(genre_ru)
+
         d["avg_rating"] = d["avg_rating"].round(2)
         d["w_score"] = d["w_score"].round(2)
         recs = d.to_dict("records")
         for rec in recs:
             rec["movie_id"] = int(rec["movie_id"])
-            rec["year"] = None if rec["year"] is None else int(rec["year"])
+            rec["year"] = None if pd.isna(rec["year"]) else int(rec["year"])
             rec["count_rating"] = int(rec["count_rating"])
-            for k in extra or {}: rec[k] = round(float(rec[k]), 3)
+            rec["title_ru"] = str(rec["title_ru"])
+            rec["genres_ru"] = str(rec["genres_ru"])
+            for k in extra or {}:
+                rec[k] = round(float(rec[k]), 3)
         return recs
 
     def genres(self):
         g = set()
-        for s in self.movies.genres: g.update(x for x in s.split("|") if x)
-        return sorted(g)
+        for s in self.movies.genres:
+            g.update(x for x in str(s).split("|") if x)
+        return [
+            {"key": key, "name": GENRE_RU.get(key, key)}
+            for key in sorted(g, key=lambda x: GENRE_RU.get(x, x))
+        ]
 
     def get_movie(self, movie_id: int):
         self._ensure()
-        if movie_id not in self.catalog.index: raise KeyError(movie_id)
-        return self._out([movie_id])[0]
+        if movie_id not in self.catalog.index:
+            raise KeyError(movie_id)
+        rec = self._out([movie_id])[0]
+        row = self.catalog.loc[movie_id]
+        rec["overview"] = "" if pd.isna(row.get("overview")) else str(row.get("overview") or "")
+        rec["overview_ru"] = "" if pd.isna(row.get("overview_ru")) else str(row.get("overview_ru") or "")
+        return rec
 
     def search(self, q: str, n: int = 20):
         self._ensure()
         q = (q or "").strip()
-        if not q: return self.popular(n)
-        mask = self.catalog.title.str.contains(re.escape(q), case=False, na=False)
-        ids = self.catalog[mask].sort_values("count_rating", ascending=False).head(n).movie_id.tolist()
+        if not q:
+            return self.popular(n)
+        pattern = re.escape(q)
+        mask = (
+            self.catalog.title.str.contains(pattern, case=False, na=False)
+            | self.catalog.title_ru.str.contains(pattern, case=False, na=False)
+        )
+        ids = (self.catalog[mask]
+               .sort_values("count_rating", ascending=False)
+               .head(n).movie_id.tolist())
         return self._out(ids)
 
     def popular(self, n: int = 10, genre: str | None = None):
@@ -208,9 +257,11 @@ class Recommender:
         because = []
         for mid in top.index:
             j = int(np.argmax(cosine_similarity(self.X_content[self.mpos[mid]], L).ravel()))
-            because.append(self.catalog.loc[liked_ids[j], "title"])
+            src = self.catalog.loc[liked_ids[j]]
+            because.append(src["title_ru"] or src["title"])
         out = self._out(top.index.tolist(), {"score": top.values})
-        for rec, bc in zip(out, because): rec["because"] = bc
+        for rec, bc in zip(out, because):
+            rec["because"] = bc
         return out
 
     def recommend_personal(self, user_id: int, n: int = 10, method: str = "content", alpha: float = 0.7, k: int = 30, min_votes: int = 10):
@@ -246,14 +297,18 @@ class Recommender:
         finally: con.close()
 
     def create_user(self, name: str):
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("Имя не может быть пустым")
         con = self._conn()
         try:
             with con.cursor() as cur:
-                cur.execute("INSERT INTO users(name) VALUES (%s)", (name.strip(),))
+                cur.execute("INSERT INTO users(name) VALUES (%s)", (name,))
                 uid = cur.lastrowid
             con.commit()
-            return {"user_id": uid, "name": name.strip(), "ratings_count": 0}
-        finally: con.close()
+            return {"user_id": uid, "name": name, "ratings_count": 0}
+        finally:
+            con.close()
 
     def rated_by_user(self, user_id: int):
         self._check_user(user_id)
@@ -273,9 +328,13 @@ class Recommender:
         return out
 
     def add_rating(self, user_id: int, movie_id: int, rating: float):
-        if not (0.5 <= rating <= 5): raise ValueError("Оценка должна быть от 0.5 до 5")
+        if not (0.5 <= rating <= 5):
+            raise ValueError("Оценка должна быть от 0.5 до 5")
+        if abs(rating * 2 - round(rating * 2)) > 1e-9:
+            raise ValueError("Оценка должна быть кратна 0.5")
         self._check_user(user_id)
-        if movie_id not in self.mpos: raise KeyError(movie_id)
+        if movie_id not in self.mpos:
+            raise KeyError(movie_id)
         
         con = self._conn()
         try:
