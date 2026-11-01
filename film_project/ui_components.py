@@ -132,7 +132,7 @@ def show_movie_details(movie_id, because=None):
         details = api_get(f"/movies/{movie_id}")
 
         if because:
-            st.info(f"💡 Похоже на: **{because}**")
+            st.info(f"Похоже на: **{because}**")
 
         title_ru = details.get("title_ru") or details.get("title") or ""
         st.write(f"**Название:** {title_ru}")
@@ -143,7 +143,7 @@ def show_movie_details(movie_id, because=None):
         genres = details.get("genres_ru") or (details.get("genres") or "").replace("|", ", ")
         st.write(f"**Жанры:** {genres or 'Не указаны'}")
         st.write(
-            f"**Рейтинг:** ★ {details.get('avg_rating', 0):.1f} "
+            f"**Рейтинг:** {details.get('avg_rating', 0):.1f} "
             f"({details.get('count_rating', 0)} оценок)"
         )
         st.divider()
@@ -193,7 +193,7 @@ def card(m, img_bytes, key, rate_cb, extra_label=None):
         f'<div style="font-weight:600; font-size:1.05em; line-height:1.2; '
         f'display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; '
         f'overflow:hidden;">{title}{year_html}</div>'
-        f'<div style="color:#f5b301; font-size:0.9em; margin-top:4px;">★ '
+        f'<div style="color:#f5b301; font-size:0.9em; margin-top:4px;">'
         f'{m["avg_rating"]:.1f} <span style="color:#888;">'
         f'({m["count_rating"]} оценок)</span></div>'
         f'{extra_html}</div></div>'

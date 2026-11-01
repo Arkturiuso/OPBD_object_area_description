@@ -3,7 +3,7 @@ from api_client import get_genres, get_users, api_get, api_post
 from ui_components import grid, movie_title
 
 COLS = 5
-st.set_page_config(page_title="Diamond Films", page_icon="🎬", layout="wide")
+st.set_page_config(page_title="Diamond Films", layout="wide")
 
 try:
     api_get("/health")
@@ -108,7 +108,7 @@ elif page == "Похожие фильмы":
                 res = api_get(f"/movies/{mid}/similar/{path}", n=10)
                 grid(res, f"sim{path}", "similarity", rate_cb, COLS)
             except RuntimeError as e:
-                st.warning(f"⚠️ {e}")
+                st.warning(f"Внимание: {e}")
                 if path == "cf":
                     st.info("Совет: переключите способ на «По контенту» - он не требует оценок других людей.")
             except Exception as e:
